@@ -543,6 +543,11 @@ export default function HomePage() {
   };
 
   const removeBook = (id: string) => {
+    const approved = window.confirm("Bu kitabı ve bağlı kayıtları silmek istediğine emin misin?");
+    if (!approved) {
+      return;
+    }
+
     setBooks((prev) => prev.filter((item) => item.id !== id));
     setLogs((prev) => prev.filter((item) => item.bookId !== id));
     if (editingId === id) {
