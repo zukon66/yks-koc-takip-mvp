@@ -211,6 +211,195 @@ const timeFormatter = new Intl.DateTimeFormat("tr-TR", {
 const isString = (value: unknown): value is string => typeof value === "string";
 const getSubjectStyle = (subject: string) => SUBJECT_STYLES[subject] ?? SUBJECT_STYLES.Diğer;
 
+const PAST_TENSE_VERBS = [
+  "çözdüm",
+  "bitirdim",
+  "tamamladım",
+  "kurdum",
+  "test ettim",
+  "yaptım",
+  "ekledim",
+  "düzenledim",
+  "hazırladım",
+  "kaydettim",
+  "uyguladım",
+  "yazdım"
+];
+const REPORT_FILLER_WORDS = new Set([
+  "ve",
+  "ile",
+  "için",
+  "bu",
+  "şu",
+  "bir",
+  "olarak",
+  "kadar",
+  "de",
+  "da"
+]);
+const SHORT_LINE_FALLBACKS = ["ana sonucu kısa not aldım", "notu şablona göre kaydettim"];
+
+const toWords = (value: string): string[] =>
+  value
+    .split(/\s+/)
+    .map((item) => item.replace(/[^0-9A-Za-zÇĞİÖŞÜçğıöşü-]/g, "").trim())
+    .filter(Boolean);
+
+const isFormattedStudyReport = (value: string): boolean =>
+  /^.+\n______\n[\s\S]*\ngeldiğime yere kadar bitirdim\nSon\nkalan:\s*.+\n△1$/u.test(value.trim());
+
+const pickTitle = (note: string): string => {
+  const normalized = note.toLocaleLowerCase("tr-TR");
+
+  if (/\b(web|app|uygulama)\b/u.test(normalized)) {
+    return "Web App not formatını kurdum";
+  }
+
+  const primaryPart =
+    note
+      .split(/[\n.!?]+/u)
+      .map((line) => line.trim())
+      .filter(Boolean)[0] ?? note;
+
+  const words = toWords(primaryPart);
+  const filteredWords = words.filter((word) => !REPORT_FILLER_WORDS.has(word.toLocaleLowerCase("tr-TR")));
+  const topicWords = (filteredWords.length > 0 ? filteredWords : words).slice(0, 4);
+  const topic = topicWords.join(" ").trim();
+
+  if (!topic) {
+    return "Çalışma notunu düzenledim";
+  }
+
+  const detectedVerb =
+    PAST_TENSE_VERBS.find((verb) => normalized.includes(verb)) ??
+    (() => {
+      const maybeVerb = words[words.length - 1]?.toLocaleLowerCase("tr-TR") ?? "";
+      return /(dım|dim|dum|düm|tım|tim|tum|tüm)$/u.test(maybeVerb) ? maybeVerb : "";
+    })();
+
+  const finalVerb = detectedVerb || "tamamladım";
+  const title =
+    topic.toLocaleLowerCase("tr-TR").includes(finalVerb) || !finalVerb
+      ? topic
+      : `${topic} ${finalVerb}`;
+  return title.split(/\s+/).slice(0, 6).join(" ");
+};
+
+const pickShortLines = (note: string): string[] => {
+  const candidates = note
+    .split(/[\n.!?]+/u)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  const lines: string[] = [];
+
+  for (const candidate of candidates) {
+    const words = toWords(candidate).slice(0, 8);
+    if (words.length < 3) {
+      continue;
+    }
+    const line = words.join(" ");
+    const normalizedLine = line.toLocaleLowerCase("tr-TR");
+    if (normalizedLine === "geldiğime yere kadar bitirdim" || normalizedLine === "son") {
+      continue;
+    }
+    lines.push(normalizedLine);
+    if (lines.length === 2) {
+      break;
+    }
+  }
+
+  for (const fallbackLine of SHORT_LINE_FALLBACKS) {
+    if (lines.length === 2) {
+      break;
+    }
+    lines.push(fallbackLine);
+  }
+
+  return lines;
+};
+
+const formatStudyReport = (value: string): string => {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return "";
+  }
+
+  if (isFormattedStudyReport(trimmed)) {
+    return trimmed;
+  }
+
+  const matches = Array.from(trimmed.matchAll(/\d+(?:[.,]\d+)?/g));
+  const remaining = matches.length > 0 ? matches[matches.length - 1][0] : "?";
+  const title = pickTitle(trimmed);
+  const shortLines = pickShortLines(trimmed);
+
+  return [
+    title,
+    "______",
+    ...shortLines,
+    "geldiğime yere kadar bitirdim",
+    "Son",
+    `kalan: ${remaining}`,
+    "△1"
+  ].join("\n");
+};
+
+const normalizeRuntimeError = (err: unknown): string => {
+  if (err instanceof Error) {
+    return `${err.name}: ${err.message}`;
+  }
+
+  if (typeof err === "string") {
+    return err;
+  }
+
+  if (err && typeof err === "object") {
+    const eventLike = err as { type?: unknown; message?: unknown };
+    if (typeof eventLike.message === "string" && eventLike.message.trim()) {
+      return eventLike.message;
+    }
+    if (typeof eventLike.type === "string" && eventLike.type.trim()) {
+      return `Event error: ${eventLike.type}`;
+    }
+    const asString = String(err);
+    if (asString === "[object Event]") {
+      return "Event error";
+    }
+    try {
+      return JSON.stringify(err);
+    } catch {
+      return asString;
+    }
+  }
+
+  return "Unknown runtime error";
+};
+
+const safeFormatStudyReport = (value: string): string => {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return "";
+  }
+
+  try {
+    return formatStudyReport(trimmed);
+  } catch (err) {
+    const normalized = normalizeRuntimeError(err);
+    if (process.env.NODE_ENV !== "production") {
+      console.error("[StudyReportFormatter]", normalized, err);
+    } else {
+      console.error("[StudyReportFormatter]", normalized);
+    }
+    return trimmed;
+  }
+};
+
+const formatOptionalStudyReport = (value: string): string => {
+  const trimmed = value.trim();
+  return trimmed ? safeFormatStudyReport(trimmed) : "";
+};
+
 const SubjectBadge = ({ subject }: { subject: string }) => {
   const style = getSubjectStyle(subject);
   return (
@@ -391,6 +580,37 @@ export default function HomePage() {
     return () => window.clearTimeout(timeoutId);
   }, [toast]);
 
+  useEffect(() => {
+    const onRuntimeError = (source: "error" | "unhandledrejection", err: unknown) => {
+      const normalized = normalizeRuntimeError(err);
+      if (process.env.NODE_ENV !== "production") {
+        console.error(`[Runtime:${source}]`, normalized, err);
+      } else {
+        console.error(`[Runtime:${source}]`, normalized);
+      }
+      setToast((prev) => prev ?? { type: "error", message: "Beklenmeyen bir hata yakalandı." });
+    };
+
+    const handleWindowError = (event: ErrorEvent) => {
+      if (!event.error && !event.message) {
+        return;
+      }
+      onRuntimeError("error", event.error ?? event);
+    };
+
+    const handleUnhandledRejection = (event: PromiseRejectionEvent) => {
+      onRuntimeError("unhandledrejection", event.reason ?? event);
+    };
+
+    window.addEventListener("error", handleWindowError);
+    window.addEventListener("unhandledrejection", handleUnhandledRejection);
+
+    return () => {
+      window.removeEventListener("error", handleWindowError);
+      window.removeEventListener("unhandledrejection", handleUnhandledRejection);
+    };
+  }, []);
+
   const groupedBooks = useMemo(() => {
     return books.reduce<Record<string, Book[]>>((acc, item) => {
       const key = item.subject.trim() || "Diğer";
@@ -491,12 +711,14 @@ export default function HomePage() {
     }
 
     const timestamp = new Date().toISOString();
+    const solvedReport = formatOptionalStudyReport(draft.solved);
+    const todoReport = formatOptionalStudyReport(draft.todo);
     const nextBook: Book = {
       id: crypto.randomUUID(),
       subject,
       bookName,
-      solved: draft.solved.trim(),
-      todo: draft.todo.trim(),
+      solved: solvedReport,
+      todo: todoReport,
       targetDate: isValidDateInput(draft.targetDate) ? draft.targetDate : todayDate,
       isCompleted: false,
       createdAt: timestamp,
@@ -529,8 +751,8 @@ export default function HomePage() {
       ...book,
       subject: nextSubject,
       bookName: nextBookName,
-      solved: editDraft.solved.trim(),
-      todo: editDraft.todo.trim(),
+      solved: formatOptionalStudyReport(editDraft.solved),
+      todo: formatOptionalStudyReport(editDraft.todo),
       targetDate: isValidDateInput(editDraft.targetDate) ? editDraft.targetDate : todayDate,
       isCompleted: editDraft.isCompleted,
       updatedAt: new Date().toISOString()
@@ -690,8 +912,8 @@ export default function HomePage() {
       ...historyEdit,
       subject: historyEdit.subject.trim() || "Diğer",
       bookName: nextBookName,
-      solved: historyEdit.solved.trim(),
-      todo: historyEdit.todo.trim(),
+      solved: formatOptionalStudyReport(historyEdit.solved),
+      todo: formatOptionalStudyReport(historyEdit.todo),
       targetDate: isValidDateInput(historyEdit.targetDate) ? historyEdit.targetDate : todayDate
     };
 
@@ -884,7 +1106,7 @@ export default function HomePage() {
                           </p>
                         </div>
                         <p
-                          className={`text-sm text-slate-800 transition dark:text-slate-200 ${
+                          className={`whitespace-pre-line text-sm text-slate-800 transition dark:text-slate-200 ${
                             task.isCompleted ? "text-slate-400 line-through dark:text-slate-500" : ""
                           }`}
                         >
@@ -1165,13 +1387,13 @@ export default function HomePage() {
                               <div className="flex items-center gap-2">
                                 <SubjectBadge subject={book.subject} />
                               </div>
-                              <p className="rounded-xl bg-teal-50 p-3 text-teal-900 dark:bg-teal-500/20 dark:text-teal-100">
+                              <p className="whitespace-pre-line rounded-xl bg-teal-50 p-3 text-teal-900 dark:bg-teal-500/20 dark:text-teal-100">
                                 <span className="mb-1 block text-xs font-semibold uppercase tracking-wide text-teal-700 dark:text-teal-200">
                                   Çözülen Yerler
                                 </span>
                                 {book.solved || "Henüz not girilmedi."}
                               </p>
-                              <p className="rounded-xl bg-amber-50 p-3 text-amber-900 dark:bg-amber-500/20 dark:text-amber-100">
+                              <p className="whitespace-pre-line rounded-xl bg-amber-50 p-3 text-amber-900 dark:bg-amber-500/20 dark:text-amber-100">
                                 <span className="mb-1 block text-xs font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-200">
                                   Boş / Ödevlik Yerler
                                 </span>
@@ -1256,13 +1478,13 @@ export default function HomePage() {
                               {item.action === "created" ? "Yeni kayıt" : "Güncelleme"} · Hedef: {dayFormatter.format(parseLocalDate(item.targetDate))}
                             </p>
 
-                            <p className="mb-2 rounded-lg bg-teal-50 p-2 text-xs text-teal-900 dark:bg-teal-500/20 dark:text-teal-100">
+                            <p className="mb-2 whitespace-pre-line rounded-lg bg-teal-50 p-2 text-xs text-teal-900 dark:bg-teal-500/20 dark:text-teal-100">
                               <span className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-teal-700 dark:text-teal-200">
                                 Çözülen Yerler
                               </span>
                               {item.solved || "Henüz not girilmedi."}
                             </p>
-                            <p className="rounded-lg bg-amber-50 p-2 text-xs text-amber-900 dark:bg-amber-500/20 dark:text-amber-100">
+                            <p className="whitespace-pre-line rounded-lg bg-amber-50 p-2 text-xs text-amber-900 dark:bg-amber-500/20 dark:text-amber-100">
                               <span className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-200">
                                 Boş / Ödevlik Yerler
                               </span>
